@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Result};
 
 use clap::Parser;
 
-use crate::{socket::ipv4_sniffer, utils::AppProtocol};
+use crate::{meta, socket::ipv4_sniffer, utils::AppProtocol};
 use byteorder::{self, NetworkEndian, WriteBytesExt};
 use ipconfig;
 use packet::{
@@ -16,29 +16,29 @@ use std::{
     net::SocketAddr,
 };
 
-/// capture ipv4 packet with winsock2
+/// Capture ipv4 packet with winsock2
 #[derive(Parser, Debug)]
-#[clap(name = "ip_packets", version = "0.1.0", author = "HareInWeed")]
+#[clap(name = meta::NAME, version = meta::VERSION, author = meta::AUTHORS[0])]
 pub struct CliArgs {
-    /// run as cli mode without gui
+    /// Run as cli mode without gui
     #[clap(short, long)]
     pub cli: bool,
 
-    /// print whole ip packet
+    /// Print whole ip packet
     #[clap(short, long)]
     pub packet: bool,
 
-    /// using polling mode with non-blocking socket
+    /// Use polling mode with non-blocking socket
     #[clap(short = 'P', long)]
     pub poll: bool,
 
-    /// flush after printing info for each packet
+    /// Flush after printing info for each packet
     #[clap(short, long)]
     pub flush: bool,
 
-    /// print payload
-    #[clap(short, long)]
-    pub load: bool,
+    /// Print payload
+    #[clap(short = 'l', long)]
+    pub payload: bool,
 }
 
 use crate::utils::{print_interfaces, Bytes, TransProto};
@@ -172,7 +172,7 @@ pub fn main(cli_args: &CliArgs) -> Result<()> {
                         println!("whole packet:");
                         print!("{}", Bytes(ip_packet.as_ref()));
                     }
-                    if cli_args.load {
+                    if cli_args.payload {
                         println!("ip packet payload, {} bytes:", ip_packet.payload().len());
                         print!("{}", Bytes(ip_packet.payload()));
                     } else {

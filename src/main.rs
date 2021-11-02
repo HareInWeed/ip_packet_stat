@@ -1,5 +1,6 @@
 mod cli;
 mod gui;
+mod meta;
 mod socket;
 mod utils;
 

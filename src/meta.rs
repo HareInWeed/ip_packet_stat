@@ -1,3 +1,3 @@
-pub const NAME: &str = "ip_packets";
-pub const VERSION: &str = "0.1.0";
-pub const AUTHORS: [&str; 1] = ["HareInWeed"];
+pub const NAME: &'static str = env!("CARGO_PKG_NAME");
+pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+pub const AUTHORS: &'static str = env!("CARGO_PKG_AUTHORS");

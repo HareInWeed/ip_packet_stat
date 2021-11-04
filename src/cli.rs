@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Result};
 
 use clap::Parser;
 
-use crate::{meta, socket::ipv4_sniffer, utils::AppProtocol};
+use crate::{meta, socket::ipv4_capturer, utils::AppProtocol};
 use byteorder::{self, NetworkEndian, WriteBytesExt};
 use ipconfig;
 use packet::{
@@ -16,11 +16,14 @@ use std::{
     net::SocketAddr,
 };
 
+use crate::utils::{alloc_console, attach_console, print_interfaces, Bytes, TransProtocol};
+
 /// Capture ipv4 packet with winsock2
 #[derive(Parser, Debug)]
-#[clap(name = meta::NAME, version = meta::VERSION, author = meta::AUTHORS[0])]
+#[clap(name = meta::NAME, version = meta::VERSION, author = meta::AUTHORS)]
 pub struct CliArgs {
-    /// Run as cli mode without gui
+    /// Run as cli mode without gui. You can run in cli without this flag
+    /// as long as some other flags present
     #[clap(short, long)]
     pub cli: bool,
 
@@ -41,9 +44,16 @@ pub struct CliArgs {
     pub payload: bool,
 }
 
-use crate::utils::{print_interfaces, Bytes, TransProto};
+pub fn main() -> Result<()> {
+    if attach_console().is_err() {
+        alloc_console()?;
+    }
+    let cli_args = CliArgs::parse();
+    cli_main(&cli_args)?;
+    Ok(())
+}
 
-pub fn main(cli_args: &CliArgs) -> Result<()> {
+pub fn cli_main(cli_args: &CliArgs) -> Result<()> {
     /* Choose network interface */
     let interfaces = {
         let mut interfaces = ipconfig::get_adapters()?
@@ -98,7 +108,7 @@ pub fn main(cli_args: &CliArgs) -> Result<()> {
         .ok_or(anyhow!("no address available"))?;
     // It seems like you can bind any port to this?
     let address = SocketAddr::from((interface_addr.clone(), 8000));
-    let mut socket = ipv4_sniffer(address, cli_args.poll)?;
+    let mut socket = ipv4_capturer(address, cli_args.poll)?;
 
     /* start sniffing */
     let mut buffer = vec![0; socket.recv_buffer_size()?];
@@ -126,7 +136,7 @@ pub fn main(cli_args: &CliArgs) -> Result<()> {
 
                     println!(
                         "transport layer protocol: {}",
-                        TransProto(ip_packet.protocol())
+                        TransProtocol(ip_packet.protocol())
                     );
                     let src_ip = ip_packet.source();
                     let dest_ip = ip_packet.destination();

@@ -1,21 +1,20 @@
+#![windows_subsystem = "windows"]
+
 mod cli;
+mod filter;
 mod gui;
 mod meta;
+mod record;
 mod socket;
 mod utils;
 
 use anyhow::Result;
 
-use clap::Parser;
-use cli::CliArgs;
-
-// use nwd::NwgUi;
-// use nwg::NativeUi;
+use std::env;
 
 fn main() -> Result<()> {
-    let cli_args = CliArgs::parse();
-    if cli_args.cli {
-        cli::main(&cli_args)
+    if env::args().len() > 1 {
+        cli::main()
     } else {
         gui::main()
     }

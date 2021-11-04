@@ -1,9 +1,11 @@
-use std::fmt::Display;
+use std::{fmt::Display, io};
 
 use ipconfig::{self, Adapter};
 use itertools::Itertools;
 
 use packet::ip::Protocol;
+
+use winapi::um::{consoleapi::AllocConsole, wincon};
 
 pub fn print_interfaces<'a>(nfs: impl Iterator<Item = &'a Adapter>, list_number: bool) {
     if list_number {
@@ -53,9 +55,9 @@ impl<'a> Display for Bytes<'a> {
 }
 
 #[derive(Debug)]
-pub struct TransProto(pub Protocol);
+pub struct TransProtocol(pub Protocol);
 
-impl Display for TransProto {
+impl Display for TransProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             Protocol::Unknown(p) => write!(f, "Unknown ({})", p),
@@ -343,7 +345,23 @@ impl Display for AppProtocol {
             Snmp => write!(f, "SNMP"),
             Irc => write!(f, "IRC"),
             Https => write!(f, "HTTPS"),
-            Unknown => write!(f, "UNKNOWN"),
+            Unknown => write!(f, "Unknown"),
         }
+    }
+}
+
+pub fn alloc_console() -> io::Result<()> {
+    if unsafe { AllocConsole() } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn attach_console() -> io::Result<()> {
+    if unsafe { wincon::AttachConsole(wincon::ATTACH_PARENT_PROCESS) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }

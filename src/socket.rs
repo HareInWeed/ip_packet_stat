@@ -1,8 +1,13 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use socket2::{Domain, Socket, Type};
 use std::os::windows::prelude::{AsRawSocket, RawSocket};
-use std::{io, mem, net::SocketAddr, ptr};
+use std::{
+    io::{self, Read},
+    mem,
+    net::SocketAddr,
+    ptr,
+};
 use winapi::ctypes::c_int;
 use winapi::shared::{mstcpip, ws2def, ws2ipdef};
 use winapi::um::winsock2 as sock;
@@ -95,11 +100,61 @@ impl SocketExt for Socket {
     }
 }
 
-pub fn ipv4_sniffer(address: SocketAddr, nonblocking: bool) -> Result<Socket> {
+pub fn ipv4_capturer(address: SocketAddr, nonblocking: bool) -> io::Result<Socket> {
     let socket = Socket::new(Domain::IPV4, Type::RAW, Some(ws2def::IPPROTO_IP.into()))?;
     socket.set_recv_ip_header(true)?;
     socket.set_nonblocking(nonblocking)?;
     socket.bind(&address.into())?;
     socket.set_recv_all_packets(true)?;
     Ok(socket)
+}
+
+#[derive(Default)]
+pub struct Capturer {
+    socket: Option<Socket>,
+    buffer: Vec<u8>,
+}
+
+impl Capturer {
+    pub fn new() -> Self {
+        Default::default()
+    }
+    pub fn capture(&mut self, address: SocketAddr, nonblocking: bool) -> io::Result<()> {
+        drop(self.socket.take());
+        let socket = ipv4_capturer(address, nonblocking)?;
+        let buffer_size = socket.recv_buffer_size()?;
+        if self.buffer.len() < buffer_size {
+            self.buffer.resize(buffer_size, 0u8);
+        }
+        self.socket = Some(socket);
+        Ok(())
+    }
+    pub fn connected(&self) -> bool {
+        self.socket.is_some()
+    }
+    pub fn set_nonblocking(&self, nonblocking: bool) -> Result<()> {
+        if let Some(socket) = self.socket.as_ref() {
+            socket.set_nonblocking(nonblocking)?;
+            Ok(())
+        } else {
+            Err(anyhow!("no socket connection, capture an ip address first"))
+        }
+    }
+    pub fn read_mut(&mut self) -> Result<&mut [u8]> {
+        if let Some(socket) = self.socket.as_mut() {
+            let bytes = match socket.read(self.buffer.as_mut_slice()) {
+                Ok(bytes) => bytes,
+                Err(err) => match err.raw_os_error() {
+                    Some(10035) => 0,
+                    _ => return Err(anyhow!(err)),
+                },
+            };
+            Ok(&mut self.buffer[..bytes])
+        } else {
+            Err(anyhow!("no socket connection, capture an ip address first"))
+        }
+    }
+    pub fn read(&mut self) -> Result<&[u8]> {
+        self.read_mut().map(|s| &s[..])
+    }
 }

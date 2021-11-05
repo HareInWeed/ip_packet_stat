@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 use chrono::prelude::*;
 
@@ -22,7 +22,7 @@ use crate::filter::{FilterError, create_filter};
 
 use ipconfig::{Adapter, OperStatus};
 
-use std::{borrow::Borrow, cell::RefCell, net::SocketAddr, time::Duration};
+use std::{cell::RefCell, net::SocketAddr, time::Duration};
 
 #[derive(Default)]
 pub struct Config {
@@ -259,7 +259,6 @@ impl App {
         {
             let mut state = self.state.borrow_mut();
             state.capturing = false;
-            state.records.clear();
         }
         self.capture.set_text("开始捕获");
         self.reset_status_bar();
@@ -279,7 +278,10 @@ impl App {
 
     fn create_filter(&self) {
         let filter_str = self.filter.text();
-        if !filter_str.is_empty() {
+        if filter_str.is_empty() { 
+            self.state.borrow_mut().filter = None;
+            self.rebuild_record_list();
+        } else {
             match create_filter(filter_str.as_str()) {
                 Ok(filter) => {
                     self.state.borrow_mut().filter = Some(Box::new(filter));
@@ -306,9 +308,6 @@ impl App {
                     return;
                 },
             }
-        } else {
-            self.state.borrow_mut().filter = None;
-            self.rebuild_record_list();
         }
         self.reset_status_bar();
     }

@@ -198,7 +198,12 @@ pub fn create_filter<'a>(
 }
 
 fn parse_pred(input: &str) -> IRes<&str, Pred> {
-    complete(parse_or)(input)
+    let (input, pred) = parse_or(input)?;
+    if input.is_empty() {
+        Ok((input, pred))
+    } else {
+        Err(NomErr(FilterError::Failed))
+    }
 }
 
 fn parse_parens(input: &str) -> IRes<&str, Pred> {
@@ -256,11 +261,30 @@ fn parse_operator(input: &str) -> IRes<&str, &str> {
     }
 }
 
-fn parse_field(input: &str) -> IRes<&str, &str> {
+fn parse_field_str(input: &str) -> IRes<&str, &str> {
     recognize(tuple((
         alt((tag("_"), alpha1)),
         many0(alt((tag("_"), alpha1, digit1))),
     )))(input)
+}
+
+fn parse_field(input: &str) -> IRes<&str, (&str, Field)> {
+    let (input, field) = parse_field_str(input)?;
+    match field {
+        "time" | "时间" => Ok((input, (field, Field::Time))),
+        "src_ip" | "源IP" => Ok((input, (field, Field::SrcIp))),
+        "src_port" | "源端口" => Ok((input, (field, Field::SrcPort))),
+        "dest_ip" | "目的IP" => Ok((input, (field, Field::DestIp))),
+        "dest_port" | "目的端口" => Ok((input, (field, Field::DestPort))),
+        "len" | "IP分组长度" => Ok((input, (field, Field::Len))),
+        "ip_payload_len" | "IP数据长度" => Ok((input, (field, Field::IpPayloadLen))),
+        "trans_proto" | "传输层协议" => Ok((input, (field, Field::TransProto))),
+        "trans_payload_len" | "报文段数据长度" => {
+            Ok((input, (field, Field::TransPayloadLen)))
+        }
+        "app_proto" | "应用层协议" => Ok((input, (field, Field::AppProto))),
+        _ => Err(NomErr(FilterError::InvalidField(field))),
+    }
 }
 
 fn parse_time(input: &str) -> IRes<&str, &str> {
@@ -290,37 +314,31 @@ fn parse_literal(input: &str) -> IRes<&str, &str> {
 }
 
 fn parse_operation(input: &str) -> IRes<&str, Pred> {
-    let (rest, (field, _, operator, _, literal)) = tuple((
-        parse_field,
-        multispace0,
-        parse_operator,
-        multispace0,
-        parse_literal,
-    ))(input)?;
-    match field {
-        "time" | "时间" => {
-            let f = Field::Time;
+    let (input, (field, f)) = parse_field(input)?;
+    let (input, (_, operator, _, literal)) =
+        tuple((multispace0, parse_operator, multispace0, parse_literal))(input)?;
+    match f {
+        Field::Time => {
             if let Ok(l) = NaiveDateTime::parse_from_str(literal, "%Y-%m-%d %H:%M:%S") {
                 let l = Literal::Time(Local.from_local_datetime(&l).unwrap());
                 match operator {
-                    "==" => Ok((rest, Pred::FieldPred(Operation::Eq(f, l)))),
-                    "!=" => Ok((rest, Pred::FieldPred(Operation::Ne(f, l)))),
-                    ">" => Ok((rest, Pred::FieldPred(Operation::Gt(f, l)))),
-                    ">=" => Ok((rest, Pred::FieldPred(Operation::Ge(f, l)))),
-                    "<" => Ok((rest, Pred::FieldPred(Operation::Lt(f, l)))),
-                    "<=" => Ok((rest, Pred::FieldPred(Operation::Le(f, l)))),
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    ">" => Ok((input, Pred::FieldPred(Operation::Gt(f, l)))),
+                    ">=" => Ok((input, Pred::FieldPred(Operation::Ge(f, l)))),
+                    "<" => Ok((input, Pred::FieldPred(Operation::Lt(f, l)))),
+                    "<=" => Ok((input, Pred::FieldPred(Operation::Le(f, l)))),
                     _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "src_ip" | "源IP" => {
-            let f = Field::SrcIp;
+        Field::SrcIp => {
             if let Ok(l) = Ipv4Addr::from_str(literal) {
                 let l = Literal::Ipv4(l);
                 if operator == "==" {
-                    Ok((rest, Pred::FieldPred(Operation::Eq(f, l))))
+                    Ok((input, Pred::FieldPred(Operation::Eq(f, l))))
                 } else {
                     Err(NomErr(FilterError::UnsupportedOperator(field, operator)))
                 }
@@ -328,29 +346,27 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "src_port" | "源端口" => {
-            let f = Field::SrcPort;
+        Field::SrcPort => {
             if let Ok(l) = u16::from_str(literal) {
                 let l = Literal::Port(l);
                 match operator {
-                    "==" => Ok((rest, Pred::FieldPred(Operation::Eq(f, l)))),
-                    "!=" => Ok((rest, Pred::FieldPred(Operation::Ne(f, l)))),
-                    ">" => Ok((rest, Pred::FieldPred(Operation::Gt(f, l)))),
-                    ">=" => Ok((rest, Pred::FieldPred(Operation::Ge(f, l)))),
-                    "<" => Ok((rest, Pred::FieldPred(Operation::Lt(f, l)))),
-                    "<=" => Ok((rest, Pred::FieldPred(Operation::Le(f, l)))),
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    ">" => Ok((input, Pred::FieldPred(Operation::Gt(f, l)))),
+                    ">=" => Ok((input, Pred::FieldPred(Operation::Ge(f, l)))),
+                    "<" => Ok((input, Pred::FieldPred(Operation::Lt(f, l)))),
+                    "<=" => Ok((input, Pred::FieldPred(Operation::Le(f, l)))),
                     _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "dest_ip" | "目的IP" => {
-            let f = Field::DestIp;
+        Field::DestIp => {
             if let Ok(l) = Ipv4Addr::from_str(literal) {
                 let l = Literal::Ipv4(l);
                 if operator == "==" {
-                    Ok((rest, Pred::FieldPred(Operation::Eq(f, l))))
+                    Ok((input, Pred::FieldPred(Operation::Eq(f, l))))
                 } else {
                     Err(NomErr(FilterError::UnsupportedOperator(field, operator)))
                 }
@@ -358,25 +374,23 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "dest_port" | "目的端口" => {
-            let f = Field::DestPort;
+        Field::DestPort => {
             if let Ok(l) = u16::from_str(literal) {
                 let l = Literal::Port(l);
                 match operator {
-                    "==" => Ok((rest, Pred::FieldPred(Operation::Eq(f, l)))),
-                    "!=" => Ok((rest, Pred::FieldPred(Operation::Ne(f, l)))),
-                    ">" => Ok((rest, Pred::FieldPred(Operation::Gt(f, l)))),
-                    ">=" => Ok((rest, Pred::FieldPred(Operation::Ge(f, l)))),
-                    "<" => Ok((rest, Pred::FieldPred(Operation::Lt(f, l)))),
-                    "<=" => Ok((rest, Pred::FieldPred(Operation::Le(f, l)))),
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    ">" => Ok((input, Pred::FieldPred(Operation::Gt(f, l)))),
+                    ">=" => Ok((input, Pred::FieldPred(Operation::Ge(f, l)))),
+                    "<" => Ok((input, Pred::FieldPred(Operation::Lt(f, l)))),
+                    "<=" => Ok((input, Pred::FieldPred(Operation::Le(f, l)))),
                     _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "len" | "IP分组长度" => {
-            let f = Field::Len;
+        Field::Len => {
             if let Ok(l) = u32::from_str(literal) {
                 let l = Literal::Len(if l > u16::max_value() as u32 {
                     u16::max_value()
@@ -384,20 +398,19 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
                     l as u16
                 });
                 match operator {
-                    "==" => Ok((rest, Pred::FieldPred(Operation::Eq(f, l)))),
-                    "!=" => Ok((rest, Pred::FieldPred(Operation::Ne(f, l)))),
-                    ">" => Ok((rest, Pred::FieldPred(Operation::Gt(f, l)))),
-                    ">=" => Ok((rest, Pred::FieldPred(Operation::Ge(f, l)))),
-                    "<" => Ok((rest, Pred::FieldPred(Operation::Lt(f, l)))),
-                    "<=" => Ok((rest, Pred::FieldPred(Operation::Le(f, l)))),
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    ">" => Ok((input, Pred::FieldPred(Operation::Gt(f, l)))),
+                    ">=" => Ok((input, Pred::FieldPred(Operation::Ge(f, l)))),
+                    "<" => Ok((input, Pred::FieldPred(Operation::Lt(f, l)))),
+                    "<=" => Ok((input, Pred::FieldPred(Operation::Le(f, l)))),
                     _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "ip_payload_len" | "IP数据长度" => {
-            let f = Field::IpPayloadLen;
+        Field::IpPayloadLen => {
             if let Ok(l) = u32::from_str(literal) {
                 let l = Literal::Len(if l > u16::max_value() as u32 {
                     u16::max_value()
@@ -405,24 +418,23 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
                     l as u16
                 });
                 match operator {
-                    "==" => Ok((rest, Pred::FieldPred(Operation::Eq(f, l)))),
-                    "!=" => Ok((rest, Pred::FieldPred(Operation::Ne(f, l)))),
-                    ">" => Ok((rest, Pred::FieldPred(Operation::Gt(f, l)))),
-                    ">=" => Ok((rest, Pred::FieldPred(Operation::Ge(f, l)))),
-                    "<" => Ok((rest, Pred::FieldPred(Operation::Lt(f, l)))),
-                    "<=" => Ok((rest, Pred::FieldPred(Operation::Le(f, l)))),
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    ">" => Ok((input, Pred::FieldPred(Operation::Gt(f, l)))),
+                    ">=" => Ok((input, Pred::FieldPred(Operation::Ge(f, l)))),
+                    "<" => Ok((input, Pred::FieldPred(Operation::Lt(f, l)))),
+                    "<=" => Ok((input, Pred::FieldPred(Operation::Le(f, l)))),
                     _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "trans_proto" | "传输层协议" => {
-            let f = Field::TransProto;
+        Field::TransProto => {
             if let Ok(l) = str_to_trans_protocol(literal) {
                 let l = Literal::TransProtocol(l);
                 if operator == "==" {
-                    Ok((rest, Pred::FieldPred(Operation::Eq(f, l))))
+                    Ok((input, Pred::FieldPred(Operation::Eq(f, l))))
                 } else {
                     Err(NomErr(FilterError::UnsupportedOperator(field, operator)))
                 }
@@ -430,8 +442,7 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "trans_payload_len" | "报文段数据长度" => {
-            let f = Field::TransPayloadLen;
+        Field::TransPayloadLen => {
             if let Ok(l) = u32::from_str(literal) {
                 let l = Literal::Len(if l > u16::max_value() as u32 {
                     u16::max_value()
@@ -439,24 +450,23 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
                     l as u16
                 });
                 match operator {
-                    "==" => Ok((rest, Pred::FieldPred(Operation::Eq(f, l)))),
-                    "!=" => Ok((rest, Pred::FieldPred(Operation::Ne(f, l)))),
-                    ">" => Ok((rest, Pred::FieldPred(Operation::Gt(f, l)))),
-                    ">=" => Ok((rest, Pred::FieldPred(Operation::Ge(f, l)))),
-                    "<" => Ok((rest, Pred::FieldPred(Operation::Lt(f, l)))),
-                    "<=" => Ok((rest, Pred::FieldPred(Operation::Le(f, l)))),
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    ">" => Ok((input, Pred::FieldPred(Operation::Gt(f, l)))),
+                    ">=" => Ok((input, Pred::FieldPred(Operation::Ge(f, l)))),
+                    "<" => Ok((input, Pred::FieldPred(Operation::Lt(f, l)))),
+                    "<=" => Ok((input, Pred::FieldPred(Operation::Le(f, l)))),
                     _ => Err(NomErr(FilterError::InvalidOperator(operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        "app_proto" | "应用层协议" => {
-            let f = Field::AppProto;
+        Field::AppProto => {
             if let Ok(l) = AppProtocol::from_str(literal) {
                 let l = Literal::AppProtocol(l);
                 if operator == "==" {
-                    Ok((rest, Pred::FieldPred(Operation::Eq(f, l))))
+                    Ok((input, Pred::FieldPred(Operation::Eq(f, l))))
                 } else {
                     Err(NomErr(FilterError::UnsupportedOperator(field, operator)))
                 }

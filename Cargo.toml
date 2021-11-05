@@ -7,7 +7,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.44"
+anyhow = "1.0.45"
 itertools = "0.10.1"
 chrono = "0.4.19"
 clap = "3.0.0-beta.5"
@@ -16,7 +16,8 @@ ipconfig = "0.2.2"
 socket2 = { version = "0.4.2", features = ["all"] }
 packet = "0.1.4"
 byteorder = "1.4.3"
-nom = "7.0.0"
+nom = "7.1.0"
+nom-unicode = "0.3.0"
 nwg = { version = "1.0.12", package = "native-windows-gui" }
 nwd = { version = "1.0.4", package = "native-windows-derive" }
 plotters = "0.3.1"

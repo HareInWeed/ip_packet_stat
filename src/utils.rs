@@ -1,4 +1,6 @@
-use std::{fmt::Display, io};
+use anyhow::{anyhow, Error, Result};
+
+use std::{fmt::Display, io, str::FromStr};
 
 use ipconfig::{self, Adapter};
 use itertools::Itertools;
@@ -217,7 +219,159 @@ fn trans_protocol_name(p: Protocol) -> &'static str {
     }
 }
 
-#[derive(Debug)]
+pub fn str_to_trans_protocol(p: &str) -> Result<Protocol> {
+    match p {
+        "Hopopt" => Ok(Protocol::Hopopt),
+        "ICMP" => Ok(Protocol::Icmp),
+        "Igmp" => Ok(Protocol::Igmp),
+        "Ggp" => Ok(Protocol::Ggp),
+        "IPv4" => Ok(Protocol::Ipv4),
+        "St" => Ok(Protocol::St),
+        "TCP" => Ok(Protocol::Tcp),
+        "Cbt" => Ok(Protocol::Cbt),
+        "Egp" => Ok(Protocol::Egp),
+        "Igp" => Ok(Protocol::Igp),
+        "BbnRccMon" => Ok(Protocol::BbnRccMon),
+        "NvpII" => Ok(Protocol::NvpII),
+        "Pup" => Ok(Protocol::Pup),
+        "Argus" => Ok(Protocol::Argus),
+        "Emcon" => Ok(Protocol::Emcon),
+        "Xnet" => Ok(Protocol::Xnet),
+        "Chaos" => Ok(Protocol::Chaos),
+        "UDP" => Ok(Protocol::Udp),
+        "Mux" => Ok(Protocol::Mux),
+        "DcnMeas" => Ok(Protocol::DcnMeas),
+        "Hmp" => Ok(Protocol::Hmp),
+        "Prm" => Ok(Protocol::Prm),
+        "XnsIdp" => Ok(Protocol::XnsIdp),
+        "Trunk1" => Ok(Protocol::Trunk1),
+        "Trunk2" => Ok(Protocol::Trunk2),
+        "Leaf1" => Ok(Protocol::Leaf1),
+        "Leaf2" => Ok(Protocol::Leaf2),
+        "Rdp" => Ok(Protocol::Rdp),
+        "Irtp" => Ok(Protocol::Irtp),
+        "IsoTp4" => Ok(Protocol::IsoTp4),
+        "Netblt" => Ok(Protocol::Netblt),
+        "MfeNsp" => Ok(Protocol::MfeNsp),
+        "MeritInp" => Ok(Protocol::MeritInp),
+        "Dccp" => Ok(Protocol::Dccp),
+        "ThreePc" => Ok(Protocol::ThreePc),
+        "Idpr" => Ok(Protocol::Idpr),
+        "Xtp" => Ok(Protocol::Xtp),
+        "Ddp" => Ok(Protocol::Ddp),
+        "IdprCmtp" => Ok(Protocol::IdprCmtp),
+        "TpPlusPlus" => Ok(Protocol::TpPlusPlus),
+        "Il" => Ok(Protocol::Il),
+        "IPv6" => Ok(Protocol::Ipv6),
+        "Sdrp" => Ok(Protocol::Sdrp),
+        "IPv6Route" => Ok(Protocol::Ipv6Route),
+        "IPv6Frag" => Ok(Protocol::Ipv6Frag),
+        "Idrp" => Ok(Protocol::Idrp),
+        "Rsvp" => Ok(Protocol::Rsvp),
+        "Gre" => Ok(Protocol::Gre),
+        "Dsr" => Ok(Protocol::Dsr),
+        "Bna" => Ok(Protocol::Bna),
+        "Esp" => Ok(Protocol::Esp),
+        "Ah" => Ok(Protocol::Ah),
+        "INlsp" => Ok(Protocol::INlsp),
+        "Swipe" => Ok(Protocol::Swipe),
+        "Narp" => Ok(Protocol::Narp),
+        "Mobile" => Ok(Protocol::Mobile),
+        "Tlsp" => Ok(Protocol::Tlsp),
+        "Skip" => Ok(Protocol::Skip),
+        "IPv6ICMP" => Ok(Protocol::Ipv6Icmp),
+        "IPv6NoNxt" => Ok(Protocol::Ipv6NoNxt),
+        "IPv6Opts" => Ok(Protocol::Ipv6Opts),
+        "HostInternal" => Ok(Protocol::HostInternal),
+        "Cftp" => Ok(Protocol::Cftp),
+        "LocalNetwork" => Ok(Protocol::LocalNetwork),
+        "SatExpak" => Ok(Protocol::SatExpak),
+        "Kryptolan" => Ok(Protocol::Kryptolan),
+        "Rvd" => Ok(Protocol::Rvd),
+        "Ippc" => Ok(Protocol::Ippc),
+        "DistributedFs" => Ok(Protocol::DistributedFs),
+        "SatMon" => Ok(Protocol::SatMon),
+        "Visa" => Ok(Protocol::Visa),
+        "Ipcv" => Ok(Protocol::Ipcv),
+        "Cpnx" => Ok(Protocol::Cpnx),
+        "Cphb" => Ok(Protocol::Cphb),
+        "Wsn" => Ok(Protocol::Wsn),
+        "Pvp" => Ok(Protocol::Pvp),
+        "BrSatMon" => Ok(Protocol::BrSatMon),
+        "SunNd" => Ok(Protocol::SunNd),
+        "WbMon" => Ok(Protocol::WbMon),
+        "WbExpak" => Ok(Protocol::WbExpak),
+        "IsoIp" => Ok(Protocol::IsoIp),
+        "Vmtp" => Ok(Protocol::Vmtp),
+        "SecureVmtp" => Ok(Protocol::SecureVmtp),
+        "Vines" => Ok(Protocol::Vines),
+        "TtpOrIptm" => Ok(Protocol::TtpOrIptm),
+        "NsfnetIgp" => Ok(Protocol::NsfnetIgp),
+        "Dgp" => Ok(Protocol::Dgp),
+        "Tcf" => Ok(Protocol::Tcf),
+        "Eigrp" => Ok(Protocol::Eigrp),
+        "OspfigP" => Ok(Protocol::OspfigP),
+        "SpriteRpc" => Ok(Protocol::SpriteRpc),
+        "Larp" => Ok(Protocol::Larp),
+        "Mtp" => Ok(Protocol::Mtp),
+        "Ax25" => Ok(Protocol::Ax25),
+        "IpIp" => Ok(Protocol::IpIp),
+        "Micp" => Ok(Protocol::Micp),
+        "SccSp" => Ok(Protocol::SccSp),
+        "Etherip" => Ok(Protocol::Etherip),
+        "Encap" => Ok(Protocol::Encap),
+        "PrivEncryption" => Ok(Protocol::PrivEncryption),
+        "Gmtp" => Ok(Protocol::Gmtp),
+        "Ifmp" => Ok(Protocol::Ifmp),
+        "Pnni" => Ok(Protocol::Pnni),
+        "Pim" => Ok(Protocol::Pim),
+        "Aris" => Ok(Protocol::Aris),
+        "Scps" => Ok(Protocol::Scps),
+        "Qnx" => Ok(Protocol::Qnx),
+        "AN" => Ok(Protocol::AN),
+        "IpComp" => Ok(Protocol::IpComp),
+        "Snp" => Ok(Protocol::Snp),
+        "CompaqPeer" => Ok(Protocol::CompaqPeer),
+        "IpxInIp" => Ok(Protocol::IpxInIp),
+        "Vrrp" => Ok(Protocol::Vrrp),
+        "Pgm" => Ok(Protocol::Pgm),
+        "ZeroHop" => Ok(Protocol::ZeroHop),
+        "L2tp" => Ok(Protocol::L2tp),
+        "Ddx" => Ok(Protocol::Ddx),
+        "Iatp" => Ok(Protocol::Iatp),
+        "Stp" => Ok(Protocol::Stp),
+        "Srp" => Ok(Protocol::Srp),
+        "Uti" => Ok(Protocol::Uti),
+        "Smp" => Ok(Protocol::Smp),
+        "Sm" => Ok(Protocol::Sm),
+        "Ptp" => Ok(Protocol::Ptp),
+        "IsisOverIpv4" => Ok(Protocol::IsisOverIpv4),
+        "Fire" => Ok(Protocol::Fire),
+        "Crtp" => Ok(Protocol::Crtp),
+        "Crudp" => Ok(Protocol::Crudp),
+        "Sscopmce" => Ok(Protocol::Sscopmce),
+        "Iplt" => Ok(Protocol::Iplt),
+        "Sps" => Ok(Protocol::Sps),
+        "Pipe" => Ok(Protocol::Pipe),
+        "Sctp" => Ok(Protocol::Sctp),
+        "Fc" => Ok(Protocol::Fc),
+        "RsvpE2eIgnore" => Ok(Protocol::RsvpE2eIgnore),
+        "MobilityHeader" => Ok(Protocol::MobilityHeader),
+        "UdpLite" => Ok(Protocol::UdpLite),
+        "MplsInIp" => Ok(Protocol::MplsInIp),
+        "Manet" => Ok(Protocol::Manet),
+        "Hip" => Ok(Protocol::Hip),
+        "Shim6" => Ok(Protocol::Shim6),
+        "Wesp" => Ok(Protocol::Wesp),
+        "Rohc" => Ok(Protocol::Rohc),
+        "Test1" => Ok(Protocol::Test1),
+        "Test2" => Ok(Protocol::Test2),
+        "Unknown" => Ok(Protocol::Unknown(0)),
+        _ => Err(anyhow!("Invalid Protocol Name")),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum AppProtocolPort {
     FtpData,    // 20
     FtpControl, // 21
@@ -262,6 +416,7 @@ impl From<u16> for AppProtocolPort {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AppProtocol {
     Ftp,
     Ssh,
@@ -278,6 +433,31 @@ pub enum AppProtocol {
     Irc,
     Https,
     Unknown,
+}
+
+impl FromStr for AppProtocol {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "FTP" => Ok(Self::Ftp),
+            "SSH" => Ok(Self::Ssh),
+            "Telnet" => Ok(Self::Telnet),
+            "SMTP" => Ok(Self::Smtp),
+            "DNS" => Ok(Self::Dns),
+            "DHCP" => Ok(Self::Dhcp),
+            "HTTP" => Ok(Self::Http),
+            "POP3" => Ok(Self::Pop3),
+            "NNTP" => Ok(Self::Nntp),
+            "NTP" => Ok(Self::Ntp),
+            "IMAP" => Ok(Self::Imap),
+            "SNMP" => Ok(Self::Snmp),
+            "IRC" => Ok(Self::Irc),
+            "HTTPS" => Ok(Self::Https),
+            "Unknown" => Ok(Self::Unknown),
+            _ => Err(anyhow!("Invalid Protocol Name")),
+        }
+    }
 }
 
 impl From<(AppProtocolPort, AppProtocolPort)> for AppProtocol {

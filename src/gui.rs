@@ -18,15 +18,18 @@ use crate::{socket::Capturer, utils::AppProtocol};
 
 use crate::record::Record;
 
+use crate::filter::{FilterError, create_filter};
+
 use ipconfig::{Adapter, OperStatus};
 
-use std::{cell::RefCell, net::SocketAddr, time::Duration};
+use std::{borrow::Borrow, cell::RefCell, net::SocketAddr, time::Duration};
 
 #[derive(Default)]
 pub struct Config {
     capturing: bool,
     interfaces: Vec<Adapter>,
     records: Vec<Record>,
+    filter: Option<Box<dyn Fn(&Record) -> bool>>
 }
 
 const PT_0: D = D::Points(0.0);
@@ -43,7 +46,9 @@ pub struct App {
     state: RefCell<Config>,
     capturer: RefCell<Capturer>,
 
-    #[nwg_control(title: "IP流量分析器", size: (800, 500))]
+    #[nwg_control(title: "IP流量分析器", size: (800, 500), 
+        icon: nwg::EmbedResource::load(None).unwrap().icon(2 /* id in rc file */, None).as_ref()
+    )]
     #[nwg_events( OnWindowClose: [Self::window_close], OnInit: [Self::init] )]
     window: nwg::Window,
 
@@ -110,6 +115,7 @@ pub struct App {
         min_size: Size { width: D::Undefined, height: D::Points(30.0) },
         margin: Rect { end: D::Points(10.0), ..Default::default() }
     )]
+    #[nwg_events(OnTextInput: [Self::create_filter])]
     filter: nwg::TextInput,
 
     #[nwg_control(parent: capturing_setting_row_frame, placeholder_text: Some("请输入捕获时间（毫秒）"))]
@@ -177,11 +183,11 @@ impl App {
     
         self.records.insert_column("时间");
         self.records.set_column_width(0, 220);
-        self.records.insert_column("源 IP");
+        self.records.insert_column("源IP");
         self.records.set_column_width(1, 135);
         self.records.insert_column("源端口");
         self.records.set_column_width(2, 60);
-        self.records.insert_column("目的 IP");
+        self.records.insert_column("目的IP");
         self.records.set_column_width(3, 135);
         self.records.insert_column("目的端口");
         self.records.set_column_width(4, 80);
@@ -271,9 +277,54 @@ impl App {
         }
     }
 
-    fn sync_record_list(&self) {
+    fn create_filter(&self) {
+        let filter_str = self.filter.text();
+        if !filter_str.is_empty() {
+            match create_filter(filter_str.as_str()) {
+                Ok(filter) => {
+                    self.state.borrow_mut().filter = Some(Box::new(filter));
+                    self.rebuild_record_list();
+                },
+                Err(err) => {
+                    match err {
+                        FilterError::InvalidLiteral(literal) => {
+                            self.status_bar.set_text(0, format!("这里不能用值 \"{}\" 来筛选", literal).as_str())
+                        },
+                        FilterError::InvalidField(field) => {
+                            self.status_bar.set_text(0, format!("名为 \"{}\" 的项目不存在", field).as_str())
+                        },
+                        FilterError::InvalidOperator(op) => {
+                            self.status_bar.set_text(0, format!("\"{}\" 不是一个合法的操作", op).as_str())
+                        },
+                        FilterError::UnsupportedOperator(field, op) => {
+                            self.status_bar.set_text(0, format!("不能在 \"{}\" 项目上使用 \"{}\" 操作筛选", field, op).as_str())
+                        },
+                        FilterError::Failed | FilterError::Nom(_, _) => {
+                            self.status_bar.set_text(0, "筛选器不合法")
+                        }
+                    }
+                    return;
+                },
+            }
+        } else {
+            self.state.borrow_mut().filter = None;
+            self.rebuild_record_list();
+        }
+        self.reset_status_bar();
+    }
+
+    fn rebuild_record_list(&self) {
         self.records.clear();
-        for record in self.state.borrow().records.iter() {
+        let state = self.state.borrow();
+        let mut records_iter = state.records.iter();
+        let mut records_filter_iter;
+        let iter: &mut dyn Iterator<Item = &Record> = if let Some(f) = state.filter.as_ref() {
+            records_filter_iter = records_iter.filter(|&r| f(r));
+            &mut records_filter_iter
+        } else {
+            &mut records_iter
+        };
+        for record in iter {
             self.records.insert_items_row(None, &record.to_string_array());
         }
     }
@@ -339,7 +390,13 @@ impl App {
                     _ => {},
                 };
             }
-            self.records.insert_items_row(None, &record.to_string_array());
+            if let Some(f) = state.filter.as_ref() {
+                if f(&record) {
+                    self.records.insert_items_row(None, &record.to_string_array());
+                }
+            } else {
+                self.records.insert_items_row(None, &record.to_string_array());
+            }
             state.records.push(record);
         }
     }

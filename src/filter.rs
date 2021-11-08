@@ -207,7 +207,7 @@ fn parse_pred(input: &str) -> IRes<&str, Pred> {
 }
 
 fn parse_parens(input: &str) -> IRes<&str, Pred> {
-    delimited(char('('), parse_pred, char(')'))(input)
+    delimited(char('('), parse_or, char(')'))(input)
 }
 
 fn parse_or(input: &str) -> IRes<&str, Pred> {
@@ -233,7 +233,11 @@ fn parse_and(input: &str) -> IRes<&str, Pred> {
 }
 
 fn parse_not(input: &str) -> IRes<&str, Pred> {
-    let (input, pred) = delimited(multispace0, preceded(tag("!"), parse_term), multispace0)(input)?;
+    let (input, (_, _, pred)) = delimited(
+        multispace0,
+        tuple((tag("!"), multispace0, parse_parens)),
+        multispace0,
+    )(input)?;
     Ok((input, Pred::Not(Box::new(pred))))
 }
 
@@ -278,11 +282,13 @@ fn parse_field(input: &str) -> IRes<&str, (&str, Field)> {
         "dest_port" | "目的端口" => Ok((input, (field, Field::DestPort))),
         "len" | "IP分组长度" => Ok((input, (field, Field::Len))),
         "ip_payload_len" | "IP数据长度" => Ok((input, (field, Field::IpPayloadLen))),
-        "trans_proto" | "传输层协议" => Ok((input, (field, Field::TransProto))),
+        "trans_proto" | "trans_protocol" | "传输层协议" => {
+            Ok((input, (field, Field::TransProto)))
+        }
         "trans_payload_len" | "报文段数据长度" => {
             Ok((input, (field, Field::TransPayloadLen)))
         }
-        "app_proto" | "应用层协议" => Ok((input, (field, Field::AppProto))),
+        "app_proto" | "app_protocol" | "应用层协议" => Ok((input, (field, Field::AppProto))),
         _ => Err(NomErr(FilterError::InvalidField(field))),
     }
 }
@@ -337,10 +343,10 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
         Field::SrcIp => {
             if let Ok(l) = Ipv4Addr::from_str(literal) {
                 let l = Literal::Ipv4(l);
-                if operator == "==" {
-                    Ok((input, Pred::FieldPred(Operation::Eq(f, l))))
-                } else {
-                    Err(NomErr(FilterError::UnsupportedOperator(field, operator)))
+                match operator {
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
@@ -365,10 +371,10 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
         Field::DestIp => {
             if let Ok(l) = Ipv4Addr::from_str(literal) {
                 let l = Literal::Ipv4(l);
-                if operator == "==" {
-                    Ok((input, Pred::FieldPred(Operation::Eq(f, l))))
-                } else {
-                    Err(NomErr(FilterError::UnsupportedOperator(field, operator)))
+                match operator {
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
@@ -433,10 +439,10 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
         Field::TransProto => {
             if let Ok(l) = str_to_trans_protocol(literal) {
                 let l = Literal::TransProtocol(l);
-                if operator == "==" {
-                    Ok((input, Pred::FieldPred(Operation::Eq(f, l))))
-                } else {
-                    Err(NomErr(FilterError::UnsupportedOperator(field, operator)))
+                match operator {
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
@@ -465,16 +471,15 @@ fn parse_operation(input: &str) -> IRes<&str, Pred> {
         Field::AppProto => {
             if let Ok(l) = AppProtocol::from_str(literal) {
                 let l = Literal::AppProtocol(l);
-                if operator == "==" {
-                    Ok((input, Pred::FieldPred(Operation::Eq(f, l))))
-                } else {
-                    Err(NomErr(FilterError::UnsupportedOperator(field, operator)))
+                match operator {
+                    "==" => Ok((input, Pred::FieldPred(Operation::Eq(f, l)))),
+                    "!=" => Ok((input, Pred::FieldPred(Operation::Ne(f, l)))),
+                    _ => Err(NomErr(FilterError::UnsupportedOperator(field, operator))),
                 }
             } else {
                 Err(NomErr(FilterError::InvalidLiteral(literal)))
             }
         }
-        _ => Err(NomErr(FilterError::InvalidField(field))),
     }
 }
 
@@ -483,7 +488,7 @@ mod filter_test {
     use super::*;
 
     #[test]
-    fn basic_test() {
+    fn test_operation() {
         let input = "src_port == 80";
         assert_eq!(
             parse_pred(input),
@@ -493,6 +498,18 @@ mod filter_test {
             ))
         );
         let input = "源端口 == 80";
+        assert_eq!(
+            parse_pred(input),
+            Ok((
+                "",
+                Pred::FieldPred(Operation::Eq(Field::SrcPort, Literal::Port(80)))
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parens() {
+        let input = "(src_port == 80)";
         assert_eq!(
             parse_pred(input),
             Ok((

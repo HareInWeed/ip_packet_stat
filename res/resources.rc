@@ -1,5 +1,4 @@
 #define RT_MANIFEST 24
 
 1 RT_MANIFEST "manifest\\no_admin.manifest"
-2 ICON "icons\\icon_128x128.ico"
-3 ICON "icons\\icon_32x32.ico"
+LOGO ICON "icons\\icon.ico"

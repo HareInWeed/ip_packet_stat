@@ -24,3 +24,6 @@ plotters = "0.3.1"
 
 [build-dependencies]
 embed-resource = "1.6.5"
+
+[patch.crates-io]
+nwg = { git = "https://github.com/HareInWeed/native-windows-gui", branch = "patch", package = "native-windows-gui" }

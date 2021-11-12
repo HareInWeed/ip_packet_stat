@@ -6,29 +6,32 @@ use nwd::NwgUi;
 use nwg::{
     NativeUi, 
     stretch::{
-        geometry::{Size, Rect}, 
-        style::{Dimension as D, FlexDirection, AlignItems}
+        self, geometry::Rect, 
+        style::{Dimension, FlexDirection, AlignItems, JustifyContent}
     }
 };
+
+use plotters::prelude::*;
 
 use packet::{Packet, ip::{v4, Protocol}, udp, tcp};
 use byteorder::{self, NetworkEndian, WriteBytesExt};
 
-use crate::{socket::Capturer, utils::AppProtocol};
-
-use crate::record::Record;
-
-use crate::filter::{FilterError, create_filter};
-
-use crate::utils::attach_console;
+use crate::{
+    filter::{FilterError, create_filter},
+    meta,
+    record::{Record, StatRecord},
+    rect, size,
+    socket::Capturer,
+    utils::{AppProtocol, attach_console}
+};
 
 use ipconfig::{Adapter, OperStatus};
 
-use std::{cell::RefCell, net::SocketAddr, time::Duration};
+use std::{cell::RefCell, iter, net::SocketAddr, time::Duration};
 
 // The numbers here are the index of each tab,  
 // and they purposely match the UI declared below.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Record = 0,
     Plot = 1,
@@ -38,7 +41,19 @@ enum Mode {
 
 impl Default for Mode {
     fn default() -> Self {
-        Self::About
+        Self::Record
+    }
+}
+
+impl From<usize> for Mode {
+    fn from(idx: usize) -> Self {
+        match idx {
+            0 => Self::Record,
+            1 => Self::Plot,
+            2 => Self::Stat,
+            3 => Self::About,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -52,32 +67,47 @@ pub struct State {
     end_time: Option<DateTime<Local>>,
     
     mode: Mode,
-    filter: Option<Box<dyn Fn(&Record) -> bool>>
+    filter: Option<Box<dyn Fn(&Record) -> bool>>,
 }
 
-const PT_0: D = D::Points(0.0);
-const PT_10: D = D::Points(10.0);
-const MARGIN_TRL: Rect<D> = Rect {
-    start: PT_10,
-    end: PT_10,
-    top: PT_10,
-    bottom: PT_0
-};
+const MARGIN_TSE: Rect<Dimension> = rect!{10.0, 10.0, 0.0};
 
 #[derive(Default, NwgUi)]
 pub struct App {
     state: RefCell<State>,
     capturer: RefCell<Capturer>,
+    stat_records: RefCell<StatRecord>,
 
-    #[nwg_control(title: "IP流量分析器", size: (900, 580), 
-        icon: nwg::EmbedResource::load(None).unwrap().icon_str("LOGO", None).as_ref()
+    #[nwg_resource(module: None)]
+    embed_resource: nwg::EmbedResource,
+
+    #[nwg_resource(
+        source_embed: Some(&data.embed_resource),
+        source_embed_str: Some("LOGO"),
+        size: Some((32, 32))
     )]
-    #[nwg_events( OnWindowClose: [Self::window_close], OnInit: [Self::init] )]
+    window_icon: nwg::Icon,
+
+    #[nwg_control(title: "IP流量分析器", size: (900, 580),
+        icon: Some(&data.window_icon)
+    )]
+    #[nwg_events(
+        OnInit: [Self::init],
+        // Enable this makes plot update whenever window is resized.
+        // But without throttling this won't be much responsive.
+        // TODO: add throttling for replotting
+        // OnResize: [Self::window_resize],
+        OnWindowClose: [Self::window_close],
+    )]
     window: nwg::Window,
 
     #[nwg_control(parent: window, interval: Duration::from_millis(10))]
     #[nwg_events( OnTimerTick: [Self::tick] )]
     polling_timer: nwg::AnimationTimer,
+
+    #[nwg_control(parent: window, interval: Duration::from_millis(1000))]
+    #[nwg_events( OnTimerTick: [Self::rebuild_plot_graph] )]
+    plotting_timer: nwg::AnimationTimer,
 
     #[nwg_control(parent: window, interval: Duration::from_millis(1))]
     #[nwg_events( OnTimerStop: [Self::stop_capture] )]
@@ -91,8 +121,8 @@ pub struct App {
     // ----- interface row -----
     #[nwg_control(parent: window, flags: "VISIBLE")]
     #[nwg_layout_item(layout: main_column,
-        min_size: Size { width: D::Undefined, height: D::Points(30.0) },
-        margin: MARGIN_TRL,
+        min_size: size!{height: 30.0},
+        margin: MARGIN_TSE,
     )]
     interface_row_frame: nwg::Frame,
 
@@ -104,24 +134,19 @@ pub struct App {
     interface_row: nwg::FlexboxLayout,
 
     #[nwg_control(parent: interface_row_frame)]
-    #[nwg_layout_item(layout: interface_row, flex_grow: 1.0,
-        margin: Rect { end: D::Points(10.0), ..Default::default() }
-    )]
+    #[nwg_layout_item(layout: interface_row, flex_grow: 1.0, margin: rect!{end: 10.0})]
     #[nwg_events(OnComboxBoxSelection: [Self::connect_interface])]
     interfaces: nwg::ComboBox<String>,
 
     #[nwg_control(parent: interface_row_frame, text: "开始捕获")]
-    #[nwg_layout_item(layout: interface_row,
-        size: Size { width: D::Points(100.0), height: D::Auto },
-    )]
+    #[nwg_layout_item(layout: interface_row, size: size!{100.0, auto})]
     #[nwg_events(MousePressLeftUp: [Self::toggle_capture])]
     capture: nwg::Button,
 
     // ----- capturing setting row -----
     #[nwg_control(parent: window, flags: "VISIBLE")]
     #[nwg_layout_item(layout: main_column,
-        min_size: Size { width: D::Undefined, height: D::Points(30.0) },
-        margin: MARGIN_TRL,
+        min_size: size!{height: 30.0}, margin: MARGIN_TSE,
     )]
     capturing_setting_row_frame: nwg::Frame,
 
@@ -134,17 +159,13 @@ pub struct App {
 
     #[nwg_control(parent: capturing_setting_row_frame, placeholder_text: Some("请输入筛选器"))]
     #[nwg_layout_item(layout: capturing_setting_row,
-        flex_grow: 1.0,
-        min_size: Size { width: D::Undefined, height: D::Points(30.0) },
-        margin: Rect { end: D::Points(10.0), ..Default::default() }
+        flex_grow: 1.0, min_size: size!{height: 30.0}, margin: rect!{end: 10.0}
     )]
     #[nwg_events(OnTextInput: [Self::create_filter])]
     filter: nwg::TextInput,
 
     #[nwg_control(parent: capturing_setting_row_frame, placeholder_text: Some("请输入捕获时间（毫秒）"))]
-    #[nwg_layout_item(layout: capturing_setting_row,
-        min_size: Size { width: D::Points(180.0), height: D::Points(30.0) },
-    )]
+    #[nwg_layout_item(layout: capturing_setting_row, min_size: size!{180.0, 30.0})]
     #[nwg_events(OnTextInput: [Self::set_timeout])]
     timeout: nwg::TextInput,
 
@@ -152,9 +173,10 @@ pub struct App {
     #[nwg_control(parent: window, flags: "VISIBLE")]
     #[nwg_layout_item(layout: main_column,
         flex_grow: 1.0,
-        min_size: Size { width: D::Undefined, height: D::Points(30.0) },
-        margin: MARGIN_TRL,
+        min_size: size!{height: 30.0},
+        margin: MARGIN_TSE,
     )]
+    #[nwg_events(TabsContainerChanged: [Self::tab_changed])]
     tabs_container: nwg::TabsContainer,
 
     // ----- record tab -----
@@ -179,13 +201,13 @@ pub struct App {
 
     #[nwg_control(parent: plot_tab)]
     #[nwg_layout(parent: plot_tab,
-        flex_direction: FlexDirection::Column, 
+        flex_direction: FlexDirection::Row, 
     )]
     plot_tab_layout: nwg::FlexboxLayout,
 
-    #[nwg_control(parent: plot_tab, text: "Plot", h_align: nwg::HTextAlign::Center)]
-    #[nwg_layout_item(layout: plot_tab_layout)]
-    plot_placeholder: nwg::Label,
+    #[nwg_control(parent: plot_tab)]
+    #[nwg_layout_item(layout: plot_tab_layout, flex_grow: 1.0)]
+    plot_graph: nwg::Plotters,
 
     // ----- stat tab -----
     #[nwg_control(parent: tabs_container, text: "统计结果")]
@@ -197,38 +219,82 @@ pub struct App {
     )]
     stat_tab_layout: nwg::FlexboxLayout,
 
-    #[nwg_control(parent: stat_tab, text: "Stat", h_align: nwg::HTextAlign::Center)]
-    #[nwg_layout_item(layout: stat_tab_layout)]
-    stat_placeholder: nwg::Label,
+    #[nwg_control(parent: stat_tab, text: "统计结果", background_color: Some([0xff, 0xff, 0xff]))]
+    #[nwg_layout_item(layout: stat_tab_layout,
+        min_size: size!{height: 30.0},
+    )]
+    stat_net_info: nwg::Label,
+
+    #[nwg_control(parent: stat_tab, text: "传输层统计结果", background_color: Some([0xff, 0xff, 0xff]))]
+    #[nwg_layout_item(layout: stat_tab_layout,
+        min_size: size!{height: 30.0},
+    )]
+    stat_trans_label: nwg::Label,
+
+    #[nwg_control(parent: stat_tab, list_style: nwg::ListViewStyle::Detailed, focus: true,
+        ex_flags: nwg::ListViewExFlags::GRID | nwg::ListViewExFlags::FULL_ROW_SELECT, 
+    )]
+    #[nwg_layout_item(layout: stat_tab_layout, flex_grow: 1.0)]
+    stat_trans_table: nwg::ListView,
+
+    #[nwg_control(parent: stat_tab, text: "应用层统计结果", background_color: Some([0xff, 0xff, 0xff]))]
+    #[nwg_layout_item(layout: stat_tab_layout,
+        min_size: size!{height: 30.0},
+    )]
+    stat_app_label: nwg::Label,
+
+    #[nwg_control(parent: stat_tab, list_style: nwg::ListViewStyle::Detailed, focus: true,
+        ex_flags: nwg::ListViewExFlags::GRID | nwg::ListViewExFlags::FULL_ROW_SELECT, 
+    )]
+    #[nwg_layout_item(layout: stat_tab_layout, flex_grow: 1.0)]
+    stat_app_table: nwg::ListView,
 
     // ----- about tab -----
     #[nwg_control(parent: tabs_container, text: "关于")]
     about_tab: nwg::Tab,
 
+    #[nwg_resource(family: "Segoe UI", size: 30)]
+    about_font: nwg::Font,
+
     #[nwg_control(parent: about_tab)]
     #[nwg_layout(parent: about_tab,
+        align_items: AlignItems::Center,
+        justify_content: JustifyContent::Center,
         flex_direction: FlexDirection::Row, 
     )]
     about_tab_layout: nwg::FlexboxLayout,
 
-    // #[nwg_control(parent: about_tab, text: "About", h_align: nwg::HTextAlign::Center)]
-    // #[nwg_layout_item(layout: about_tab_layout)]
-    // about_placeholder: nwg::Label,
+    #[nwg_resource(
+        source_embed: Some(&data.embed_resource),
+        source_embed_str: Some("LOGO"),
+        size: Some((128, 128))
+    )]
+    app_logo: nwg::Icon,
 
     #[nwg_control(parent: about_tab, size: (128, 128),
         background_color: Some([0xff, 0xff, 0xff]),
-        icon: nwg::EmbedResource::load(None).unwrap().icon_str("LOGO", None).as_ref()
+        icon: Some(&data.app_logo),
     )]
-    #[nwg_layout_item(layout: about_tab_layout,
-        size: Size { width: D::Points(64.0), height: D::Points(64.0) },
+    #[nwg_layout_item(layout: about_tab_layout, size: size!{128.0, 128.0})]
+    about_logo: nwg::ImageFrame,
+
+    #[nwg_control(parent: about_tab,
+        background_color: Some([0xff, 0xff, 0xff]),
+        text: format!(
+r"{} {}
+by {}
+
+",
+        meta::NAME, meta::VERSION, meta::AUTHORS).as_str(),
     )]
-    logo: nwg::ImageFrame,
+    #[nwg_layout_item(layout: about_tab_layout, size: size!{200.0, 180.0})]
+    about_info: nwg::Label,
 
     // ----- status bar -----
     #[nwg_control(parent: window, text: "准备就绪")]
     #[nwg_layout_item(layout: main_column, 
-        margin: Rect { top: D::Points(10.0), ..Default::default() },
-        min_size: Size { width: D::Undefined, height: D::Points(30.0) },
+        margin: rect!{top: 10.0},
+        min_size: size!{height: 30.0}
     )]
     status_bar: nwg::StatusBar,
 }
@@ -290,6 +356,26 @@ impl App {
         self.record_table.set_column_width(8, 120);
         self.record_table.insert_column("应用层协议");
         self.record_table.set_headers_enabled(true);
+
+        // ----- stat tab -----
+        self.stat_trans_table.insert_column("协议");
+        self.stat_trans_table.insert_column("分组数量");
+        self.stat_trans_table.insert_column("字节数");
+        self.stat_trans_table.insert_column("网络层上传输的字节数");
+        self.stat_trans_table.set_column_width(3, 180);
+        self.stat_trans_table.set_headers_enabled(true);
+
+        self.stat_app_table.insert_column("协议");
+        self.stat_app_table.insert_column("分组数量");
+        self.stat_app_table.insert_column("字节数");
+        self.stat_app_table.insert_column("网络层上传输的字节数");
+        self.stat_app_table.set_column_width(3, 180);
+        self.stat_app_table.insert_column("传输层上传输的字节数");
+        self.stat_app_table.set_column_width(4, 180);
+        self.stat_app_table.set_headers_enabled(true);
+
+        // ----- about tab -----
+        self.about_info.set_font(Some(&self.about_font));
     }
 
     fn connect_interface(&self) {
@@ -315,6 +401,20 @@ impl App {
         }
     }
 
+    fn tab_changed(&self) {
+        let mode: Mode = self.tabs_container.selected_tab().into();
+        if mode != Mode::Plot {
+            self.plotting_timer.stop();
+        }
+        match mode {
+            Mode::Record => self.rebuild_record_table(),
+            Mode::Plot => self.plotting_timer.start(),
+            Mode::Stat => self.display_stat_table(),
+            Mode::About => {},
+        };
+        self.state.borrow_mut().mode = mode;
+    }
+
     fn set_timeout(&self) {
         let text = self.timeout.text();
         let text = text.trim();
@@ -333,15 +433,17 @@ impl App {
     }
 
     fn start_capture(&self) {
+        self.capture.set_text("停止捕获");
+        self.reset_status_bar();
+        self.record_table.clear();
         {
             let mut state = self.state.borrow_mut();
             state.capturing = true;
             state.records.clear();
+            self.stat_records.borrow_mut().clear();
+            state.end_time = None;
             state.start_time = Some(Local::now());
         }
-        self.capture.set_text("停止捕获");
-        self.record_table.clear();
-        self.reset_status_bar();
         self.capturing_timer.start();
         self.polling_timer.start();
     }
@@ -367,6 +469,8 @@ impl App {
             } else {
                 self.start_capture();
             }
+        } else {
+            self.status_bar.set_text(0, "请首先选择网卡");
         }
     }
 
@@ -374,12 +478,16 @@ impl App {
         let filter_str = self.filter.text();
         if filter_str.is_empty() { 
             self.state.borrow_mut().filter = None;
-            self.rebuild_record_list();
+            self.rebuild_record_table();
+            self.sync_stat_data();
+            self.display_stat_table();
         } else {
             match create_filter(filter_str.as_str()) {
                 Ok(filter) => {
                     self.state.borrow_mut().filter = Some(Box::new(filter));
-                    self.rebuild_record_list();
+                    self.rebuild_record_table();
+                    self.sync_stat_data();
+                    self.display_stat_table();
                 },
                 Err(err) => {
                     match err {
@@ -406,7 +514,18 @@ impl App {
         self.reset_status_bar();
     }
 
-    fn rebuild_record_list(&self) {
+    fn sync_stat_data(&self) {
+        let state = self.state.borrow();
+        let mut state_records = self.stat_records.borrow_mut();
+        state_records.clear();
+        if let Some(f) = state.filter.as_ref() {
+            state_records.update_multiple(state.records.iter().filter(|r| f(r)));
+        } else {
+            state_records.update_multiple(state.records.iter());
+        };
+    }
+
+    fn rebuild_record_table(&self) {
         self.record_table.clear();
         let state = self.state.borrow();
         let mut records_iter = state.records.iter();
@@ -420,6 +539,97 @@ impl App {
         for record in iter {
             self.record_table.insert_items_row(None, &record.to_string_array());
         }
+    }
+
+    fn rebuild_plot_graph(&self) {
+        if let Err(_err) = self.rebuild_plot_graph_with_result() {
+            // we can not print here if no console is available
+            // eprintln!("{:?}", _err);
+        }
+    }
+
+    fn rebuild_plot_graph_with_result(&self) -> Result<()> {
+        let graph = self.plot_graph.draw()?;
+
+        let mut plot = ChartBuilder::on(&graph)
+            .caption("y=x^2", ("sans-serif", 50).into_font())
+            .margin(-15)
+            .x_label_area_size(30)
+            .y_label_area_size(30)
+            .build_cartesian_2d(-1f32..1f32, -0.1f32..1f32)?;
+
+        plot.configure_mesh()
+            .light_line_style(ShapeStyle { color: TRANSPARENT, filled: false, stroke_width: 0 })
+            .draw()?;
+
+        plot
+            .draw_series(LineSeries::new(
+                (-50..=50).map(|x| x as f32 / 50.0).map(|x| (x, x * x)),
+                &RED,
+            ))?
+            .label("y = x^2")
+            .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+
+        plot
+            .configure_series_labels()
+            .background_style(&WHITE.mix(0.8))
+            .border_style(&BLACK)
+            .draw()?;
+        Ok(())
+    }
+
+    fn display_stat_table(&self) {
+        let stat_records = self.stat_records.borrow();
+        self.stat_net_info.set_text(format!(
+            "统计结果：{} 个 IPv4 分组，共 {} 字节", 
+            stat_records.stat_net_table.packet_num, 
+            stat_records.stat_net_table.byte_num
+        ).as_str());
+
+        self.stat_trans_table.clear();
+        let mut trans_records = stat_records.stat_trans_table.iter().collect::<Vec<_>>();
+        trans_records.sort_by(|a, b| a.0.cmp(b.0));
+        for (idx, (proto, record)) in trans_records.into_iter().enumerate() {
+            let row = iter::once(proto.clone()).chain(record.to_string_array().into_iter()).collect::<Vec<_>>();
+            self.stat_trans_table.insert_items_row(Some(idx as i32), row.as_slice());
+        }
+
+        self.stat_app_table.clear();
+        let mut app_records = stat_records.stat_app_table.iter().collect::<Vec<_>>();
+        app_records.sort_by(|a, b| a.0.cmp(b.0));
+        for (idx, (proto, record)) in app_records.into_iter().enumerate() {
+            let row = iter::once(proto.clone()).chain(record.to_string_array().into_iter()).collect::<Vec<_>>();
+            self.stat_app_table.insert_items_row(Some(idx as i32), row.as_slice());
+        }
+    }
+
+    fn update_record(&self, record: Record) {
+        self.state.borrow_mut().records.push(record.clone());
+
+        if let Some(f) = self.state.borrow().filter.as_ref() {
+            if !f(&record) {
+                return;
+            }
+        }
+
+        self.stat_records.borrow_mut().update(&record);
+
+        let mode = self.state.borrow().mode;
+
+        match mode {
+            Mode::Record => self.update_record_table(&record),
+            Mode::Plot => self.update_plot_graph(&record),
+            Mode::Stat => self.display_stat_table(),
+            Mode::About => {},
+        }
+    }
+
+    fn update_record_table(&self, record: &Record) {
+        self.record_table.insert_items_row(None, &record.to_string_array());
+    }
+
+    fn update_plot_graph(&self, _record: &Record) {
+        self.rebuild_plot_graph();
     }
 
     fn tick(&self) {
@@ -486,16 +696,10 @@ impl App {
         }
     }
 
-    fn update_record(&self, record: Record) {
-        let mut state = self.state.borrow_mut();
-        if let Some(f) = state.filter.as_ref() {
-            if f(&record) {
-                self.record_table.insert_items_row(None, &record.to_string_array());
-            }
-        } else {
-            self.record_table.insert_items_row(None, &record.to_string_array());
+    fn window_resize(&self) {
+        if { self.state.borrow().mode } == Mode::Plot {
+            self.rebuild_plot_graph()
         }
-        state.records.push(record);
     }
 
     fn window_close(&self) {

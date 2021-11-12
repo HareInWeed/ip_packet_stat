@@ -68,7 +68,7 @@ impl Display for TransProtocol {
     }
 }
 
-fn trans_protocol_name(p: Protocol) -> &'static str {
+pub fn trans_protocol_name(p: Protocol) -> &'static str {
     match p {
         Protocol::Hopopt => "Hopopt",
         Protocol::Icmp => "ICMP",
@@ -544,4 +544,81 @@ pub fn attach_console() -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// macro to specify dimensions in gui
+#[macro_export]
+macro_rules! dim {
+    (auto) => {
+        stretch::style::Dimension::Auto
+    };
+    (undef) => {
+        stretch::style::Dimension::Undefined
+    };
+    (pt $x:tt) => {
+        stretch::style::Dimension::Points($x)
+    };
+    (pct $x:tt) => {
+        stretch::style::Dimension::Percent($x)
+    };
+    ((pt $x:tt)) => {
+        stretch::style::Dimension::Points($x)
+    };
+    ((pct $x:tt)) => {
+        stretch::style::Dimension::Percent($x)
+    };
+    ($x:literal) => {
+        stretch::style::Dimension::Points($x)
+    };
+    ($x:tt) => {
+        $x
+    };
+}
+
+/// macro to specify a rectangle shape in gui
+#[macro_export]
+macro_rules! rect {
+    ($x:tt $(,)?) => {
+        $crate::rect! {$x, $x, $x, $x}
+    };
+    ($x:tt, $y:tt $(,)?) => {
+        $crate::rect! {$x, $y, $x, $y}
+    };
+    ($x:tt, $y:tt, $z:tt $(,)?) => {
+        $crate::rect! {$x, $y, $z, $y}
+    };
+    ($t:tt, $e:tt, $b:tt, $s:tt $(,)?) => {
+        stretch::geometry::Rect {
+            top: $crate::dim!($t),
+            end: $crate::dim!($e),
+            bottom: $crate::dim!($b),
+            start: $crate::dim!($s),
+        }
+    };
+    ($field:ident: $x:tt) => {
+        stretch::geometry::Rect {
+            $field: $crate::dim!($x),
+            ..Default::default()
+        }
+    };
+}
+
+/// macro to specify size of a element in gui
+#[macro_export]
+macro_rules! size {
+    ($x:tt $(,)?) => {
+        $crate::size! {$x, $x}
+    };
+    ($w:tt, $h:tt) => {
+        stretch::geometry::Size {
+            width: $crate::dim!($w),
+            height: $crate::dim!($h),
+        }
+    };
+    ($field:ident: $x:tt) => {
+        stretch::geometry::Size {
+            $field: $crate::dim!($x),
+            ..Default::default()
+        }
+    };
 }

@@ -48,7 +48,7 @@ impl Record {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct NetRecord {
     pub packet_num: u64,
     pub byte_num: u64,
@@ -59,8 +59,8 @@ impl NetRecord {
         self.packet_num += other.packet_num;
         self.byte_num += other.byte_num;
     }
-    pub fn to_string_iter(&self) -> impl Iterator<Item = String> {
-        iter::once(self.packet_num.to_string()).chain(iter::once(self.byte_num.to_string()))
+    pub fn to_string_array(&self) -> [String; 2] {
+        [self.packet_num.to_string(), self.byte_num.to_string()]
     }
 }
 

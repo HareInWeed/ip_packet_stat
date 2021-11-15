@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use chrono::prelude::*;
+use chrono::{Duration, prelude::*};
 
 use nwd::NwgUi;
 use nwg::{
@@ -18,16 +18,24 @@ use byteorder::{self, NetworkEndian, WriteBytesExt};
 
 use crate::{
     filter::{FilterError, create_filter},
-    meta,
-    record::{Record, StatRecord},
-    rect, size,
-    socket::Capturer,
+    meta, 
+    record::{NetRecord, Record, StatRecord}, 
+    rect, size, 
+    socket::Capturer, 
     utils::{AppProtocol, attach_console}
 };
 
 use ipconfig::{Adapter, OperStatus};
 
-use std::{cell::RefCell, iter, net::SocketAddr, time::Duration};
+use std::{
+    cell::RefCell, 
+    iter, mem,
+    net::SocketAddr, 
+    time::Duration as StdDuration
+};
+
+// TODO: make this configurable
+const PLOT_SAMPLING_INTERVAL: u64 = 200;
 
 // The numbers here are the index of each tab,  
 // and they purposely match the UI declared below.
@@ -72,11 +80,144 @@ pub struct State {
 
 const MARGIN_TSE: Rect<Dimension> = rect!{10.0, 10.0, 0.0};
 
+pub struct PlotRecord {
+    sample_interval: Duration,
+    start_time: Option<DateTime<Local>>,
+    end_time: Option<DateTime<Local>>,
+    uncommitted_record: NetRecord,
+    records: Vec<NetRecord>,
+}
+
+impl Default for PlotRecord {
+    fn default() -> Self {
+        Self {
+            sample_interval: Duration::milliseconds(PLOT_SAMPLING_INTERVAL as i64),
+            start_time: Default::default(),
+            end_time: Default::default(),
+            uncommitted_record: Default::default(),
+            records: Default::default(),
+        }
+    }
+}
+
+impl PlotRecord {
+    fn clear(&mut self) {
+        self.start_time = None;
+        self.end_time = None;
+        self.uncommitted_record = Default::default();
+        self.records.clear();
+    }
+
+    fn clear_with_time(&mut self, time: DateTime<Local>) {
+        self.clear();
+        self.start_time = Some(time);
+        self.end_time = Some(time);
+    }
+
+    fn commit_rest(&mut self) {
+        if self.uncommitted_record.packet_num != 0 || self.uncommitted_record.byte_num != 0 {
+            self.end_time.map(|t| t + self.sample_interval);
+            self.records.push(mem::take(&mut self.uncommitted_record));
+        }
+    }
+
+    fn from_records<'a>(
+        iter: impl Iterator<Item = &'a Record>,
+        start_time: Option<DateTime<Local>>, 
+        end_time: Option<DateTime<Local>>) -> Self {
+
+        let mut records = Self {
+            start_time,
+            end_time: start_time,
+            ..Default::default()
+        };
+        records.update_records(iter, end_time);
+
+        if let (Some(end_time), Some(record_end_time)) = (end_time, records.end_time) {
+            if end_time > record_end_time {
+                records.end_time = Some(end_time);
+            }
+        }
+
+        records
+    }
+
+    fn update_records<'a>(
+        &mut self,
+        iter: impl Iterator<Item = &'a Record>,
+        end_time: Option<DateTime<Local>>) {
+
+        let mut iter = iter.peekable();
+        if let Some(&record) = iter.peek() {
+            if let Some(start_time) = self.start_time {
+                if record.time < start_time {
+                    self.start_time = Some(record.time);
+                }
+            } else {
+                self.start_time = Some(record.time);
+            }
+            if self.end_time.is_none() {
+                self.end_time = Some(record.time);
+            }
+        } else if self.end_time.is_none() {
+            if end_time.is_some() {
+                self.end_time = end_time
+            } else {
+                return;
+            }
+        }
+
+        let mut iter_without_dummy = iter.map(|r| {
+            let nr: NetRecord = r.into();
+            (&r.time, nr)
+        });
+        let mut iter_with_dummy;
+        let dummy_end_time;
+        let iter: &mut dyn Iterator<Item = (&DateTime<Local>, NetRecord)>;
+        if let Some(end_time) = end_time {
+            dummy_end_time = end_time;
+            iter_with_dummy = iter_without_dummy.chain(iter::once((
+                &dummy_end_time,
+                NetRecord {
+                    packet_num: 0,
+                    byte_num: 0,
+                }
+            )));
+            iter = &mut iter_with_dummy;
+        } else {
+            iter = &mut iter_without_dummy;
+        }
+
+        let mut time = self.end_time.unwrap();
+        let mut next_time = time + self.sample_interval;
+
+        for (record_time, record) in iter {
+            if record_time < &next_time {
+                self.uncommitted_record.add_up(&record.into());
+            } else {
+                self.records.push(self.uncommitted_record.clone());
+                self.uncommitted_record = Default::default();
+                self.uncommitted_record.add_up(&record.into());
+                time = next_time;
+                next_time = time + self.sample_interval;
+                while record_time >= &next_time {
+                    self.records.push(Default::default());
+                    time = next_time;
+                    next_time = time + self.sample_interval;
+                }
+            }
+        }
+
+        self.end_time = Some(time);
+    }
+}
+
 #[derive(Default, NwgUi)]
 pub struct App {
     state: RefCell<State>,
     capturer: RefCell<Capturer>,
     stat_records: RefCell<StatRecord>,
+    plot_records: RefCell<PlotRecord>,
 
     #[nwg_resource(module: None)]
     embed_resource: nwg::EmbedResource,
@@ -93,23 +234,25 @@ pub struct App {
     )]
     #[nwg_events(
         OnInit: [Self::init],
-        // Enable this makes plot update whenever window is resized.
-        // But without throttling this won't be much responsive.
-        // TODO: add throttling for replotting
-        // OnResize: [Self::window_resize],
+        OnWindowMaximize: [Self::window_maximize],
+        OnResize: [Self::window_resize],
         OnWindowClose: [Self::window_close],
     )]
     window: nwg::Window,
 
-    #[nwg_control(parent: window, interval: Duration::from_millis(10))]
+    #[nwg_control(parent: window, interval: StdDuration::from_millis(10))]
     #[nwg_events( OnTimerTick: [Self::tick] )]
     polling_timer: nwg::AnimationTimer,
 
-    #[nwg_control(parent: window, interval: Duration::from_millis(1000))]
-    #[nwg_events( OnTimerTick: [Self::rebuild_plot_graph] )]
+    #[nwg_control(parent: window, lifetime: Some(StdDuration::from_millis(1000 / 60)))]
+    #[nwg_events( OnTimerStop: [Self::display_plot_graph] )]
     plotting_timer: nwg::AnimationTimer,
 
-    #[nwg_control(parent: window, interval: Duration::from_millis(1))]
+    #[nwg_control(parent: window, interval: StdDuration::from_millis(PLOT_SAMPLING_INTERVAL))]
+    #[nwg_events( OnTimerTick: [Self::refresh_plot_graph] )]
+    plotting_sample_timer: nwg::AnimationTimer,
+
+    #[nwg_control(parent: window, interval: StdDuration::from_millis(1))]
     #[nwg_events( OnTimerStop: [Self::stop_capture] )]
     capturing_timer: nwg::AnimationTimer,
 
@@ -403,15 +546,23 @@ impl App {
 
     fn tab_changed(&self) {
         let mode: Mode = self.tabs_container.selected_tab().into();
-        if mode != Mode::Plot {
-            self.plotting_timer.stop();
+        let capturing = self.state.borrow().capturing;
+        
+        if capturing {
+            if mode == Mode::Plot {
+                self.plotting_sample_timer.start();
+            } else {
+                self.plotting_sample_timer.stop();
+            }
         }
+
         match mode {
             Mode::Record => self.rebuild_record_table(),
             Mode::Plot => self.plotting_timer.start(),
             Mode::Stat => self.display_stat_table(),
             Mode::About => {},
         };
+
         self.state.borrow_mut().mode = mode;
     }
 
@@ -422,7 +573,7 @@ impl App {
             self.capturing_timer.set_lifetime(None);
         } else {
             if let Ok(timeout) = text.parse::<u64>() {
-                self.capturing_timer.set_lifetime(Some(Duration::from_millis(timeout)));
+                self.capturing_timer.set_lifetime(Some(StdDuration::from_millis(timeout)));
             } else {
                 self.capturing_timer.set_lifetime(None);
                 self.status_bar.set_text(0, "捕获时间不正确");
@@ -433,29 +584,35 @@ impl App {
     }
 
     fn start_capture(&self) {
-        self.capture.set_text("停止捕获");
-        self.reset_status_bar();
-        self.record_table.clear();
         {
             let mut state = self.state.borrow_mut();
             state.capturing = true;
             state.records.clear();
             self.stat_records.borrow_mut().clear();
             state.end_time = None;
-            state.start_time = Some(Local::now());
+            let now = Local::now();
+            state.start_time = Some(now);
+            self.plot_records.borrow_mut().clear_with_time(now);
         }
+        self.capture.set_text("停止捕获");
+        self.reset_status_bar();
+        self.record_table.clear();
         self.capturing_timer.start();
+        self.plotting_sample_timer.start();
         self.polling_timer.start();
     }
 
     fn stop_capture(&self) {
         self.polling_timer.stop();
+        self.plotting_sample_timer.stop();
         self.capturing_timer.stop();
         {
             let mut state = self.state.borrow_mut();
             state.capturing = false;
             state.end_time = Some(Local::now());
         }
+        self.plot_records.borrow_mut().commit_rest();
+        self.plotting_timer.start();
         self.capture.set_text("开始捕获");
         self.reset_status_bar();
     }
@@ -480,14 +637,18 @@ impl App {
             self.state.borrow_mut().filter = None;
             self.rebuild_record_table();
             self.sync_stat_data();
+            self.sync_plot_data();
             self.display_stat_table();
+            self.plotting_timer.start();
         } else {
             match create_filter(filter_str.as_str()) {
                 Ok(filter) => {
                     self.state.borrow_mut().filter = Some(Box::new(filter));
                     self.rebuild_record_table();
                     self.sync_stat_data();
+                    self.sync_plot_data();
                     self.display_stat_table();
+                    self.plotting_timer.start();
                 },
                 Err(err) => {
                     match err {
@@ -518,11 +679,38 @@ impl App {
         let state = self.state.borrow();
         let mut state_records = self.stat_records.borrow_mut();
         state_records.clear();
-        if let Some(f) = state.filter.as_ref() {
-            state_records.update_multiple(state.records.iter().filter(|r| f(r)));
-        } else {
-            state_records.update_multiple(state.records.iter());
-        };
+
+        let id = |_: &Record| true;
+        let f = state.filter.as_ref()
+            .map(|f| f as &dyn Fn(&Record) -> bool)
+            .unwrap_or(&id);
+
+        state_records.update_multiple(state.records.iter().filter(|r| f(r)));
+    }
+
+    fn sync_plot_data(&self) {
+        let state = self.state.borrow();
+        let mut plot_records = self.plot_records.borrow_mut();
+
+        let id = |_: &Record| true;
+        let f = state.filter.as_ref()
+            .map(|f| f as &dyn Fn(&Record) -> bool)
+            .unwrap_or(&id);
+
+        *plot_records = PlotRecord::from_records(
+            state.records.iter().filter(|&r| f(r)), 
+            if state.capturing { None } else { state.start_time }, 
+            if state.capturing { Some(Local::now()) } else { state.end_time },
+        );
+    }
+
+    fn update_plot_data(&self, record: &Record) {
+        let mut plot_records = self.plot_records.borrow_mut();
+
+        plot_records.update_records(
+            iter::once(record), 
+            None
+        );
     }
 
     fn rebuild_record_table(&self) {
@@ -536,45 +724,131 @@ impl App {
         } else {
             &mut records_iter
         };
+        self.record_table.set_redraw(false);
         for record in iter {
             self.record_table.insert_items_row(None, &record.to_string_array());
         }
+        self.record_table.set_redraw(true);
     }
 
-    fn rebuild_plot_graph(&self) {
-        if let Err(_err) = self.rebuild_plot_graph_with_result() {
-            // we can not print here if no console is available
-            // eprintln!("{:?}", _err);
+
+    fn refresh_plot_graph(&self) {
+        let mut plot_records = self.plot_records.borrow_mut();
+
+        plot_records.update_records(
+            iter::empty(), 
+            Some(Local::now())
+        );
+
+        self.plotting_timer.start();
+    }
+
+    fn display_plot_graph(&self) {
+        if let Err(_err) = self.display_plot_graph_with_result() {
+            // print here with no console available could cause program panic
+            // TODO: integrate with logger
+            eprintln!("{:?}", _err);
         }
     }
 
-    fn rebuild_plot_graph_with_result(&self) -> Result<()> {
+    fn display_plot_graph_with_result(&self) -> Result<()> {
+        let records = self.plot_records.borrow();
+
         let graph = self.plot_graph.draw()?;
 
+        let (max_num, max_len) = records.records.iter().fold(
+            (10u64, 10u64),
+            |(max_num, max_len), r| (
+                max_num.max(r.packet_num),
+                max_len.max(r.byte_num)
+            )
+        );
+
+        let max_time = if let (Some(start_time), Some(end_time)) = (records.start_time, records.end_time) {
+            end_time - start_time
+        } else {
+            Duration::seconds(10)
+        };
+
+        let time_range = if self.state.borrow().capturing && max_time < Duration::seconds(10) {
+            (max_time - Duration::seconds(10)).num_milliseconds()..max_time.num_milliseconds()
+        } else {
+            0..max_time.num_milliseconds()
+        };
+
         let mut plot = ChartBuilder::on(&graph)
-            .caption("y=x^2", ("sans-serif", 50).into_font())
-            .margin(-15)
+            .margin_left(10)
+            .margin_right(10)
             .x_label_area_size(30)
             .y_label_area_size(30)
-            .build_cartesian_2d(-1f32..1f32, -0.1f32..1f32)?;
+            .right_y_label_area_size(60)
+            .build_cartesian_2d(time_range.clone(), 0..max_num)?
+            .set_secondary_coord(time_range.clone(), 0..max_len);
+
+        let x_formatter_empty ;
+        let x_formatter_with_time;
+        let x_formatter_with_time_long;
+        let x_formatter: &dyn Fn(&i64) -> String;
+        if let Some(start_time) = records.start_time {
+            if max_time <= Duration::seconds(10) {
+                x_formatter_with_time = move |x: &i64| (start_time + Duration::milliseconds(*x)).format("%M:%S%.3f").to_string();
+                x_formatter = &x_formatter_with_time;
+            } else {
+                x_formatter_with_time_long = move |x: &i64| (start_time + Duration::milliseconds(*x)).format("%H:%M:%S%.3f").to_string();
+                x_formatter = &x_formatter_with_time_long;
+            }
+        } else {
+            x_formatter_empty = |_: &i64| String::new();
+            x_formatter = &x_formatter_empty;
+        }
+
+        let num_color = RGBColor(167, 79, 1);
+        let len_color = RGBColor(17, 125, 187);
 
         plot.configure_mesh()
             .light_line_style(ShapeStyle { color: TRANSPARENT, filled: false, stroke_width: 0 })
+            .x_label_formatter(x_formatter)
+            .axis_style(ShapeStyle::from(num_color))
             .draw()?;
 
+        plot.configure_secondary_axes()
+            .axis_style(ShapeStyle::from(len_color))
+            .draw()?;
+
+        // let time_samples = (0..records.records.len() as u64).map(|idx| (idx * PLOT_SAMPLING_INTERVAL) as i64);
+        let time_samples = (0..max_time.num_milliseconds()).step_by(PLOT_SAMPLING_INTERVAL as usize);
+        let data = time_samples.clone().zip(records.records.iter().map(|r| r.packet_num));
+
         plot
-            .draw_series(LineSeries::new(
-                (-50..=50).map(|x| x as f32 / 50.0).map(|x| (x, x * x)),
-                &RED,
-            ))?
-            .label("y = x^2")
-            .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+            .draw_series(LineSeries::new(data.clone(),&num_color))?
+            .label("分组/个")
+            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &num_color));
+        plot
+            .draw_series(AreaSeries::new(
+                data.clone(),
+                0,
+                num_color.mix(0.2)
+            ))?;
+
+        let data = time_samples.clone().zip(records.records.iter().map(|r| r.byte_num));
+        plot
+            .draw_secondary_series(LineSeries::new(data.clone(),&len_color))?
+            .label("流量/字节")
+            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &len_color));
+        plot
+            .draw_secondary_series(AreaSeries::new(
+                data.clone(),
+                0,
+                len_color.mix(0.2)
+            ))?;
 
         plot
             .configure_series_labels()
+            .label_font(("Segoe UI", 12))
             .background_style(&WHITE.mix(0.8))
             .border_style(&BLACK)
             .draw()?;
+
         Ok(())
     }
 
@@ -613,12 +887,13 @@ impl App {
         }
 
         self.stat_records.borrow_mut().update(&record);
+        self.update_plot_data(&record);
 
         let mode = self.state.borrow().mode;
 
         match mode {
             Mode::Record => self.update_record_table(&record),
-            Mode::Plot => self.update_plot_graph(&record),
+            Mode::Plot => {},
             Mode::Stat => self.display_stat_table(),
             Mode::About => {},
         }
@@ -626,10 +901,6 @@ impl App {
 
     fn update_record_table(&self, record: &Record) {
         self.record_table.insert_items_row(None, &record.to_string_array());
-    }
-
-    fn update_plot_graph(&self, _record: &Record) {
-        self.rebuild_plot_graph();
     }
 
     fn tick(&self) {
@@ -696,9 +967,15 @@ impl App {
         }
     }
 
+    fn window_maximize(&self) {
+        if { self.state.borrow().mode } == Mode::Plot {
+            self.plotting_timer.start();
+        }
+    }
+
     fn window_resize(&self) {
         if { self.state.borrow().mode } == Mode::Plot {
-            self.rebuild_plot_graph()
+            self.plotting_timer.start();
         }
     }
 

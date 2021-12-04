@@ -1,13 +1,35 @@
-# IP Stats
+# IPv4 Packet Statistics Tool
 
-## Detail
+An IPv4 packet statistics tool built with Winsock2.
 
-- GUI: [Native Windows GUI](https://github.com/gabdube/native-windows-gui)
-- raw socket: 
-  - [socket2](https://github.com/rust-lang/socket2) and [winapi-rs](https://github.com/retep998/winapi-rs)
-    - Administrator permission is required due to raw socket api constraints
-    - Does not support reading ipv6 packet header
-  - [libpnet](https://github.com/libpnet/libpnet)
-    - require Rust toolchain built on MSVC
-    - require WinPcap or npcap in WinPcap API-compatible Mode installed
-    - require static lib `Packet.lib`, which could be found in [WinPcap Developers pack](https://www.winpcap.org/devel.htm)
+**Notice: This is a homework project, use it at your own risk.**
+
+## TODO List
+
+- [x] IPv4 packet capture
+- [x] packet filter
+  - [ ] better time literal
+  - [ ] clear error message
+- [x] realtime packet list
+- [x] realtime capture summary table
+- [x] realtime throughput chart
+  - [ ] better plotting when filtering by time
+- [ ] config panel
+- [ ] cross-platform
+  - [ ] replace `socket2` with `libpnet`
+  - [ ] cross-platform gui implementation 
+- [ ] i18n
+
+## Showcase
+
+![capture_list](img/capture_list.png)
+
+![throughput_chart](img/throughput_chart.png)
+
+![summary](img/summary.png)
+
+![about](img/about.png)
+
+## LICENSE
+
+MIT

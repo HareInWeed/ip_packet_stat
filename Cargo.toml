@@ -1,6 +1,6 @@
 [package]
 name = "ip_packet_stat"
-version = "1.0.0"
+version = "1.0.1"
 description = "An IPv4 packet statistics tool built with Winsock2"
 repository = "https://github.com/HareInWeed/ip_packet_stat"
 authors = ["HareInWeed"]
